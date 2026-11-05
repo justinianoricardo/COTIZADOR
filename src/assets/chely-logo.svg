@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1080">
+<defs>
+ <linearGradient id="rainbow" x1="0" y1="0" x2="1" y2="1">
+  <stop offset="0" stop-color="#ff4780"/><stop offset=".42" stop-color="#05b9e8"/><stop offset="1" stop-color="#7438ed"/>
+ </linearGradient>
+ <linearGradient id="pink" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#ff4780"/><stop offset="1" stop-color="#ff4b83"/></linearGradient>
+ <linearGradient id="blue" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#06b9e8"/><stop offset="1" stop-color="#08b6e4"/></linearGradient>
+ <linearGradient id="purple" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#7438ed"/><stop offset="1" stop-color="#8438e9"/></linearGradient>
+</defs>
+<rect width="1080" height="1080" fill="#fff"/>
+<path d="M846 260H694c-47-80-134-130-234-130-151 0-274 123-274 274s123 274 274 274c100 0 187-50 234-130h152c-61 151-210 258-386 258-222 0-402-180-402-402S238 2 460 2c176 0 325 107 386 258Z" transform="translate(40 36) scale(.77)" fill="url(#rainbow)" stroke="#171717" stroke-width="3"/>
+<path d="M431 345l24-54 54-34 54-6 31-49 18 58 59-28-22 56 86-49-46 75 19 61 60 62-5 42-49 31-48-9-36-31-60 0-42-22 43 65 19 87-43 14-72-8-61-29-16-76 3-77 22-60 34-29-34 18-16 42-31 47Z" transform="translate(104 92) scale(.76)" fill="#fff" stroke="#171717" stroke-width="4" stroke-linejoin="round"/>
+<text x="800" y="448" font-family="Arial,sans-serif" font-size="78" font-weight="700" fill="#fff" stroke="#171717" stroke-width="3" paint-order="stroke">3D</text>
+<g transform="translate(78 665)" fill="#fff" stroke="#171717" stroke-width="5" stroke-linejoin="round">
+ <path d="M0 0h151l-22 38H48v62h81l22 38H0Z"/>
+ <path d="M211 0h42v62h84V0h42v138h-42v-38h-84v38h-42Z"/>
+ <path d="M636 0h42v100h79l22 38H636Z"/>
+ <path d="M840 0h42v47c0 27 14 39 39 39s39-12 39-39V0h42v51c0 49-26 75-62 82v50h-38v-50c-36-7-62-33-62-82Z"/>
+</g>
+<g stroke="#171717" stroke-width="4">
+ <rect x="488" y="665" width="173" height="32" rx="14" fill="url(#pink)"/><rect x="488" y="716" width="173" height="32" rx="14" fill="url(#blue)"/><rect x="488" y="767" width="173" height="32" rx="14" fill="url(#purple)"/>
+</g>
+<text x="485" y="894" text-anchor="end" font-family="Arial,sans-serif" font-size="44" font-weight="800" fill="#111">TU LO</text>
+<text x="505" y="894" font-family="Arial,sans-serif" font-size="44" font-weight="800" fill="#ff4780">IMAGINAS...</text>
+<text x="485" y="950" text-anchor="end" font-family="Arial,sans-serif" font-size="44" font-weight="800" fill="#111">NOSOTROS LO</text>
+<text x="505" y="950" font-family="Arial,sans-serif" font-size="44" font-weight="800" fill="#7438ed">CREAMOS</text>
+</svg>

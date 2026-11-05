@@ -1,0 +1,1070 @@
+import { useState, useMemo, useCallback, useEffect } from "react";
+
+const TABS = ["Cotizador", "Trabajos", "Inventario", "Dashboard", "Configuración"];
+const EQUIPO = ["Ricardo", "Rosario"];
+
+const CFG_DEFAULT = { electricidadKwh:1.021, consumoKw:0.15, desgastePorHora:3.5, alertaGramos:100 };
+
+const MATS_DEFAULT = [
+  { id:"PLA",    nombre:"PLA",    costo:80  },
+  { id:"PLA+",   nombre:"PLA+",   costo:110 },
+  { id:"PETG",   nombre:"PETG",   costo:120 },
+  { id:"ABS",    nombre:"ABS",    costo:100 },
+  { id:"TPU",    nombre:"TPU",    costo:150 },
+  { id:"Resina", nombre:"Resina", costo:200 },
+  { id:"ASA",    nombre:"ASA",    costo:130 },
+  { id:"Nylon",  nombre:"Nylon",  costo:160 },
+];
+
+const TIPOS_MAT = {
+  PLA:    ["Estándar","Seda","Mate","Marmolado","Metálico","Madera","Fluorescente"],
+  "PLA+": ["Estándar","Resistente al impacto","Alta temperatura"],
+  PETG:   ["Estándar","Transparente","CF (fibra carbono)"],
+  ABS:    ["Estándar","ABS+","CF (fibra carbono)"],
+  TPU:    ["Shore 95A","Shore 85A (suave)","Shore 60A (muy suave)"],
+  Resina: ["Estándar","ABS-Like","Flexible","Transparente","Water-Washable"],
+  ASA:    ["Estándar","CF (fibra carbono)"],
+  Nylon:  ["PA6","PA12","PA6-CF","PA12-CF"],
+};
+
+const COLORES_MAT = ["Blanco","Negro","Gris","Rojo","Azul","Verde","Amarillo","Naranja","Morado","Rosa","Marrón","Transparente","Plateado","Dorado","Otro"];
+const BADGE_COLORS = ["#4A90D9","#27ae60","#e67e22","#9b59b6","#e74c3c","#1abc9c"];
+const estadoColor  = { Pendiente:"#e67e22", Confirmado:"#27ae60", Cancelado:"#e74c3c" };
+
+// Colores por sección
+const SEC = {
+  cotizador: { bg:"#eef4ff", border:"#4A90D9", head:"#1a3a5c", icon:"👤" },
+  cliente:   { bg:"#edfbf3", border:"#27ae60", head:"#1a6640", icon:"🏠" },
+  trabajo:   { bg:"#fff8ee", border:"#e67e22", head:"#7a4200", icon:"🖨" },
+  material:  { bg:"#f5eeff", border:"#9b59b6", head:"#5b2d8e", icon:"🧵" },
+  extra:     { bg:"#fff3e0", border:"#ff9800", head:"#7a4000", icon:"➕" },
+  params:    { bg:"#fef9e7", border:"#f0c040", head:"#7a5f00", icon:"⚙️" },
+  resumen:   { bg:"#e8f6f3", border:"#1abc9c", head:"#0e6655", icon:"📊" },
+};
+
+function fmt(n)  { return "Bs " + Number(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,","); }
+function hoy()   { return new Date().toISOString().split("T")[0]; }
+function uid()   { return Math.random().toString(36).slice(2); }
+const lineaVacia = () => ({ id:uid(), nombre:"PLA", tipo:"Estándar", color:"Negro", gramos:100 });
+const extraVacio = () => ({ id:uid(), descripcion:"", costo:0 });
+
+function costoFijoPorHoras(horas, cfg) {
+  return (cfg.electricidadKwh * cfg.consumoKw + cfg.desgastePorHora) * horas;
+}
+function costoMateriales(lineas, mats) {
+  return (lineas||[]).reduce((s,l) => {
+    const m = mats.find(m=>m.id===l.nombre)||mats[0];
+    return s + (l.gramos/1000)*m.costo;
+  }, 0);
+}
+function costoExtras(extras) {
+  return (extras||[]).reduce((s,e)=>s+(Number(e.costo)||0), 0);
+}
+function calcDesglose(t, mats, cfg) {
+  const cantidad = Math.max(1, t.cantidad||1);
+  const cMat     = costoMateriales(t.lineas||[], mats);
+  const cFijo    = costoFijoPorHoras(t.horas||0, cfg);
+  const cMO      = Number(t.manoObra)||0;
+  const cExt     = costoExtras(t.extras);
+  const costoTotalProduccion = cMat + cFijo + cMO + cExt;
+  const costoPorUnidad       = costoTotalProduccion / cantidad;
+  const precioPorUnidad      = costoPorUnidad * (1 + (t.markup||0)/100);
+  const precioTotal          = precioPorUnidad * cantidad;
+  return { cMat, cFijo, cMO, cExt, costoTotalProduccion, costoPorUnidad, precioPorUnidad, precioTotal, cantidad };
+}
+
+const EMPTY_COT = {
+  cotizador:"", cliente:"", telefono:"", email:"", ciudad:"",
+  pieza:"", descripcion:"", cantidad:1,
+  lineas:[lineaVacia()], extras:[],
+  horas:2, manoObra:0, markup:40, notas:"", fechaEntrega:"",
+};
+
+const INV_DEFAULT = [
+  { id:uid(), material:"PLA",    tipo:"Estándar", color:"Blanco",       lote:"L-001", fecha:"2025-01-10", grInicial:1000, grUsado:350, grPurga:15 },
+  { id:uid(), material:"PLA",    tipo:"Seda",     color:"Dorado",       lote:"L-002", fecha:"2025-03-05", grInicial:1000, grUsado:120, grPurga:8  },
+  { id:uid(), material:"PETG",   tipo:"Estándar", color:"Negro",        lote:"L-003", fecha:"2025-04-20", grInicial:1000, grUsado:680, grPurga:22 },
+  { id:uid(), material:"Resina", tipo:"ABS-Like", color:"Transparente", lote:"L-004", fecha:"2025-05-01", grInicial:1000, grUsado:920, grPurga:30 },
+];
+
+// ── PDF (tamaño carta) ──
+function imprimirPDF(t, mats, cfg) {
+  const d = calcDesglose(t, mats, cfg);
+  const resM = (t.lineas||[]).map(l=>`${l.nombre} ${l.tipo} ${l.color} (${l.gramos}g)`).join(" + ");
+  const extrasRows = (t.extras||[]).filter(e=>e.descripcion).map(e=>`<tr><td>${e.descripcion}</td><td style="text-align:right">—</td><td style="text-align:right">Bs ${Number(e.costo).toFixed(2)}</td></tr>`).join("");
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Presupuesto #${String(t.id).slice(-6)}</title>
+<style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:Arial,Helvetica,sans-serif;color:#222;font-size:13px;background:#f2f2f2;}
+.page{width:8.5in;min-height:11in;margin:0 auto;padding:0.6in 0.65in;background:#fff;}
+.logo-box{border:2px dashed #ccc;height:0.95in;display:flex;align-items:center;justify-content:center;color:#bbb;font-size:12px;border-radius:6px;margin-bottom:22px;}
+.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;border-bottom:2px solid #1a3a5c;padding-bottom:14px;}
+.h-title{font-size:21px;font-weight:700;color:#1a3a5c;margin-bottom:3px;}
+.h-ref{font-size:12px;color:#999;}
+.badge{display:inline-block;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700;background:#e8f4fd;color:#1a6fc4;}
+.st{font-size:10px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.8px;margin:16px 0 8px;}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:6px 24px;}
+.field label{font-size:10px;color:#aaa;display:block;margin-bottom:1px;}
+.field span{font-size:13px;font-weight:500;}
+.div{border:none;border-top:1px solid #eee;margin:14px 0;}
+table{width:100%;border-collapse:collapse;margin-top:4px;}
+thead th{background:#1a3a5c;color:#fff;padding:9px 10px;font-size:12px;text-align:left;}
+tbody tr:nth-child(even){background:#f9f9f9;}
+tbody td{padding:9px 10px;border-bottom:1px solid #eee;font-size:13px;}
+.subtotal-row td{font-weight:600;background:#f0f4f8;}
+.total-box{background:#1a3a5c;color:#fff;border-radius:8px;padding:16px 22px;display:flex;justify-content:space-between;align-items:center;margin-top:14px;}
+.nota{background:#fffbe6;border-left:3px solid #f0a500;padding:9px 12px;border-radius:4px;font-size:12px;margin-top:12px;}
+.footer{margin-top:36px;font-size:10px;color:#bbb;text-align:center;border-top:1px solid #eee;padding-top:12px;}
+@media print{@page{size:letter;margin:0;}body{background:#fff;}.page{margin:0;}}</style></head>
+<body><div class="page">
+<div class="logo-box">[ ESPACIO PARA LOGO ]</div>
+<div class="header"><div><div class="h-title">Presupuesto de Impresión 3D</div><div class="h-ref">Ref. #${String(t.id).slice(-6)} · Fecha: ${t.fecha||hoy()}</div></div>
+<div style="text-align:right"><div style="font-weight:600;color:#1a3a5c;font-size:15px">${t.cotizador}</div><div style="font-size:11px;color:#999;margin-bottom:5px">Cotizador</div><span class="badge">${t.estado}</span></div></div>
+<div class="st">Datos del cliente</div>
+<div class="grid2">
+<div class="field"><label>Nombre</label><span>${t.cliente}</span></div>
+<div class="field"><label>Teléfono</label><span>${t.telefono||"—"}</span></div>
+<div class="field"><label>Email</label><span>${t.email||"—"}</span></div>
+<div class="field"><label>Ciudad</label><span>${t.ciudad||"—"}</span></div></div>
+<hr class="div">
+<div class="st">Detalle del trabajo</div>
+<div class="grid2">
+<div class="field"><label>Pieza</label><span>${t.pieza}${t.descripcion?" — "+t.descripcion:""}</span></div>
+<div class="field"><label>Material(es)</label><span>${resM}</span></div>
+<div class="field"><label>Cantidad</label><span>${d.cantidad} ${d.cantidad>1?"piezas":"pieza"}</span></div>
+${t.fechaEntrega?`<div class="field"><label>Entrega</label><span>${t.fechaEntrega}</span></div>`:""}
+</div><hr class="div">
+<div class="st">Desglose de costos</div>
+<table><thead><tr><th>Concepto</th><th style="text-align:right">Total producción</th><th style="text-align:right">Por unidad</th></tr></thead>
+<tbody>
+<tr><td>Material</td><td style="text-align:right">Bs ${d.cMat.toFixed(2)}</td><td style="text-align:right">Bs ${(d.cMat/d.cantidad).toFixed(2)}</td></tr>
+<tr><td>Electricidad + Desgaste (${t.horas}h)</td><td style="text-align:right">Bs ${d.cFijo.toFixed(2)}</td><td style="text-align:right">Bs ${(d.cFijo/d.cantidad).toFixed(2)}</td></tr>
+<tr><td>Mano de obra</td><td style="text-align:right">Bs ${d.cMO.toFixed(2)}</td><td style="text-align:right">Bs ${(d.cMO/d.cantidad).toFixed(2)}</td></tr>
+${extrasRows}
+<tr class="subtotal-row"><td>Costo total producción</td><td style="text-align:right">Bs ${d.costoTotalProduccion.toFixed(2)}</td><td style="text-align:right">Bs ${d.costoPorUnidad.toFixed(2)}</td></tr>
+<tr class="subtotal-row"><td>Precio con ganancia (+${t.markup}%)</td><td style="text-align:right"></td><td style="text-align:right">Bs ${d.precioPorUnidad.toFixed(2)}</td></tr>
+</tbody></table>
+<div class="total-box"><div><div style="font-size:12px;opacity:.75">TOTAL (${d.cantidad} ${d.cantidad>1?"piezas":"pieza"})</div><div style="font-size:24px;font-weight:700">Bs ${d.precioTotal.toFixed(2)}</div></div>
+<div style="text-align:right"><div style="font-size:12px;opacity:.75">Precio por unidad</div><div style="font-size:16px;font-weight:600">Bs ${d.precioPorUnidad.toFixed(2)}</div></div></div>
+${t.notas?`<div class="nota"><strong>Notas:</strong> ${t.notas}</div>`:""}
+<div class="footer">Este presupuesto es válido por 15 días · Santa Cruz, Bolivia · Cotizado por: ${t.cotizador}</div>
+</div><script>window.onload=function(){window.print();}<\/script></body></html>`;
+  try {
+    const blob = new Blob([html], { type:"text/html" });
+    const url  = URL.createObjectURL(blob);
+    // Descarga directa del HTML (imprimible como PDF desde el navegador)
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `Presupuesto-${t.pieza?.replace(/\s+/g,"-")||"3D"}-${String(t.id).slice(-6)}.html`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url), 10000);
+    return url; // devolvemos la URL para preview si se necesita
+  } catch (err) {
+    alert("No se pudo generar el documento. Inténtalo de nuevo.");
+    return null;
+  }
+}
+
+// ── Sección con color ──
+function Seccion({ tipo, titulo, subtitulo, children, accion }) {
+  const s = SEC[tipo]||SEC.trabajo;
+  return (
+    <div style={{borderRadius:12, border:`1.5px solid ${s.border}`, overflow:"hidden", marginBottom:0}}>
+      <div style={{background:s.border, padding:"10px 16px", display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+        <div>
+          <span style={{color:"#fff", fontWeight:600, fontSize:13}}>{s.icon} {titulo}</span>
+          {subtitulo && <span style={{color:"rgba(255,255,255,.75)", fontSize:11, marginLeft:8}}>{subtitulo}</span>}
+        </div>
+        {accion}
+      </div>
+      <div style={{background:s.bg, padding:"14px 16px"}}>{children}</div>
+    </div>
+  );
+}
+
+// ── Input controlado estable ──
+function Field({ label, children, span2 }) {
+  return (
+    <div style={span2?{gridColumn:"1/-1"}:{}}>
+      {label && <label style={{fontSize:12, color:"#555", display:"block", marginBottom:4, fontWeight:500}}>{label}</label>}
+      {children}
+    </div>
+  );
+}
+
+// ── Formulario reutilizable ──
+function FormCotizacion({ data, onChange, mats, desglose }) {
+
+  const inp = {
+    padding:"9px 11px", borderRadius:8,
+    border:"1.5px solid #ccc",
+    background:"#fff", color:"#222",
+    fontSize:14, width:"100%", boxSizing:"border-box",
+    outline:"none",
+  };
+  const sml = {...inp, fontSize:13, padding:"7px 9px"};
+
+  function updLinea(id, key, val) {
+    onChange("lineas", (data.lineas||[]).map(l => {
+      if(l.id !== id) return l;
+      const u = {...l, [key]: val};
+      if(key === "nombre") u.tipo = (TIPOS_MAT[val]||["Estándar"])[0];
+      return u;
+    }));
+  }
+  function updExtra(id, key, val) {
+    onChange("extras", (data.extras||[]).map(e => e.id===id ? {...e,[key]:val} : e));
+  }
+
+  return (
+    <div style={{display:"flex", flexDirection:"column", gap:12}}>
+
+      {/* Cotizador */}
+      <Seccion tipo="cotizador" titulo="Cotizador">
+        <div style={{display:"flex", gap:8, flexWrap:"wrap"}}>
+          {EQUIPO.map(n => (
+            <button key={n} onClick={()=>onChange("cotizador",n)}
+              style={{padding:"7px 20px", borderRadius:20, fontSize:14, cursor:"pointer",
+                border: data.cotizador===n ? "none" : "1.5px solid #4A90D9",
+                background: data.cotizador===n ? "#1a3a5c" : "#fff",
+                color: data.cotizador===n ? "#fff" : "#1a3a5c",
+                fontWeight: data.cotizador===n ? 600 : 400}}>
+              {n}
+            </button>
+          ))}
+        </div>
+      </Seccion>
+
+      {/* Cliente */}
+      <Seccion tipo="cliente" titulo="Datos del cliente">
+        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:10}}>
+          <Field label="Nombre del cliente *" span2>
+            <input style={inp} placeholder="Nombre completo"
+              value={data.cliente}
+              onChange={e => onChange("cliente", e.target.value)} />
+          </Field>
+          <Field label="Teléfono">
+            <input style={inp} placeholder="7X XXX XXX"
+              value={data.telefono}
+              onChange={e => onChange("telefono", e.target.value)} />
+          </Field>
+          <Field label="Ciudad">
+            <input style={inp} placeholder="Ej: Santa Cruz"
+              value={data.ciudad}
+              onChange={e => onChange("ciudad", e.target.value)} />
+          </Field>
+          <Field label="Email" span2>
+            <input style={inp} placeholder="correo@ejemplo.com"
+              value={data.email}
+              onChange={e => onChange("email", e.target.value)} />
+          </Field>
+        </div>
+      </Seccion>
+
+      {/* Trabajo */}
+      <Seccion tipo="trabajo" titulo="Detalle del trabajo">
+        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:10}}>
+          <Field label="Nombre de la pieza *" span2>
+            <input style={inp} placeholder="Ej: Soporte de pared, carcasa..."
+              value={data.pieza}
+              onChange={e => onChange("pieza", e.target.value)} />
+          </Field>
+          <Field label="Descripción" span2>
+            <input style={inp} placeholder="Dimensiones, uso, características..."
+              value={data.descripcion}
+              onChange={e => onChange("descripcion", e.target.value)} />
+          </Field>
+          <Field label="Cantidad (unidades)">
+            <input style={inp} type="number" min={1}
+              value={data.cantidad}
+              onChange={e => onChange("cantidad", Math.max(1, Number(e.target.value)))} />
+          </Field>
+          <Field label="Fecha de entrega">
+            <input style={inp} type="date"
+              value={data.fechaEntrega}
+              onChange={e => onChange("fechaEntrega", e.target.value)} />
+          </Field>
+          <Field label="Notas" span2>
+            <input style={inp} placeholder="Urgente, acabado especial..."
+              value={data.notas}
+              onChange={e => onChange("notas", e.target.value)} />
+          </Field>
+        </div>
+      </Seccion>
+
+      {/* Materiales */}
+      <Seccion tipo="material" titulo="Materiales"
+        subtitulo="gramaje total para toda la producción"
+        accion={
+          <button onClick={()=>onChange("lineas",[...(data.lineas||[]),lineaVacia()])}
+            style={{padding:"4px 12px", fontSize:12, borderRadius:16, cursor:"pointer",
+              background:"rgba(255,255,255,.2)", border:"1px solid rgba(255,255,255,.5)", color:"#fff"}}>
+            + Agregar
+          </button>
+        }>
+        {(data.lineas||[]).map((l,idx) => {
+          const cMat = (l.gramos/1000)*((mats.find(m=>m.id===l.nombre)||mats[0]).costo);
+          return (
+            <div key={l.id} style={{background:"#fff", borderRadius:8, padding:"10px 12px", marginBottom:8, border:"1px solid #ddd"}}>
+              <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8}}>
+                <span style={{fontSize:12, fontWeight:600, color:"#9b59b6"}}>Material {idx+1}</span>
+                {(data.lineas||[]).length>1 &&
+                  <button onClick={()=>onChange("lineas",(data.lineas||[]).filter(x=>x.id!==l.id))}
+                    style={{fontSize:11, padding:"2px 8px", borderRadius:10, cursor:"pointer",
+                      background:"transparent", border:"1px solid #e74c3c", color:"#e74c3c"}}>
+                    Quitar
+                  </button>}
+              </div>
+              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr 90px", gap:8}}>
+                <Field label="Tipo">
+                  <select style={sml} value={l.nombre} onChange={e=>updLinea(l.id,"nombre",e.target.value)}>
+                    {mats.map(m=><option key={m.id}>{m.nombre}</option>)}
+                  </select>
+                </Field>
+                <Field label="Variante">
+                  <select style={sml} value={l.tipo} onChange={e=>updLinea(l.id,"tipo",e.target.value)}>
+                    {(TIPOS_MAT[l.nombre]||["Estándar"]).map(t=><option key={t}>{t}</option>)}
+                  </select>
+                </Field>
+                <Field label="Color">
+                  <select style={sml} value={l.color} onChange={e=>updLinea(l.id,"color",e.target.value)}>
+                    {COLORES_MAT.map(c=><option key={c}>{c}</option>)}
+                  </select>
+                </Field>
+                <Field label="Gramos">
+                  <input style={sml} type="number" min={1}
+                    value={l.gramos}
+                    onChange={e=>updLinea(l.id,"gramos",Number(e.target.value))} />
+                </Field>
+              </div>
+              <p style={{margin:"6px 0 0", fontSize:11, color:"#888"}}>
+                Costo: {fmt(cMat)} · Bs {(mats.find(m=>m.id===l.nombre)||mats[0]).costo}/kg
+              </p>
+            </div>
+          );
+        })}
+      </Seccion>
+
+      {/* Extras */}
+      <Seccion tipo="extra" titulo="Materiales / Costos extra"
+        subtitulo="resina UV, pintura, embalaje, etc."
+        accion={
+          <button onClick={()=>onChange("extras",[...(data.extras||[]),extraVacio()])}
+            style={{padding:"4px 12px", fontSize:12, borderRadius:16, cursor:"pointer",
+              background:"rgba(255,255,255,.2)", border:"1px solid rgba(255,255,255,.5)", color:"#fff"}}>
+            + Agregar
+          </button>
+        }>
+        {(data.extras||[]).length===0 &&
+          <p style={{fontSize:12, color:"#aaa", textAlign:"center", padding:"6px 0"}}>Sin costos extra.</p>}
+        {(data.extras||[]).map(e => (
+          <div key={e.id} style={{display:"grid", gridTemplateColumns:"1fr 120px auto", gap:8, alignItems:"flex-end", marginBottom:8, background:"#fff", borderRadius:8, padding:"10px 12px", border:"1px solid #ddd"}}>
+            <Field label="Descripción">
+              <input style={inp} placeholder="Ej: Resina UV, pintura..."
+                value={e.descripcion}
+                onChange={v=>updExtra(e.id,"descripcion",v.target.value)} />
+            </Field>
+            <Field label="Costo (Bs)">
+              <input style={inp} type="number" min={0}
+                value={e.costo}
+                onChange={v=>updExtra(e.id,"costo",v.target.value)} />
+            </Field>
+            <button onClick={()=>onChange("extras",(data.extras||[]).filter(x=>x.id!==e.id))}
+              style={{padding:"8px 10px", borderRadius:8, border:"1px solid #e74c3c",
+                background:"transparent", color:"#e74c3c", cursor:"pointer", fontSize:13,
+                alignSelf:"flex-end", marginBottom:0}}>
+              ✕
+            </button>
+          </div>
+        ))}
+      </Seccion>
+
+      {/* Parámetros */}
+      <Seccion tipo="params" titulo="Parámetros de costo" subtitulo="no aparece en el presupuesto">
+        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10}}>
+          <Field label="Horas de impresión (total)">
+            <input style={inp} type="number" min={0.5} step={0.5}
+              value={data.horas}
+              onChange={e=>onChange("horas", Number(e.target.value))} />
+          </Field>
+          <Field label="Costos fijos (elec.+desgaste)">
+            <input style={{...inp, background:"#f5f5f5", color:"#888"}}
+              value={fmt(desglose.cFijo)} readOnly />
+          </Field>
+          <Field label="Mano de obra total (Bs)">
+            <input style={inp} type="number" min={0}
+              value={data.manoObra}
+              onChange={e=>onChange("manoObra", e.target.value)} />
+          </Field>
+          <Field label="Markup / Ganancia (%)">
+            <input style={inp} type="number" min={0} max={300}
+              value={data.markup}
+              onChange={e=>onChange("markup", Number(e.target.value))} />
+          </Field>
+        </div>
+      </Seccion>
+
+      {/* Resumen */}
+      <Seccion tipo="resumen" titulo="Resumen de costos">
+        <div style={{display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:10, marginBottom:12}}>
+          {[
+            {label:"Material (total prod.)",         val:fmt(desglose.cMat)},
+            {label:"Fijos elec.+desgaste (total)",   val:fmt(desglose.cFijo)},
+            {label:"Mano de obra (total)",            val:fmt(desglose.cMO)},
+            {label:"Extras (total)",                  val:fmt(desglose.cExt)},
+            {label:`Costo producción (${desglose.cantidad} u.)`, val:fmt(desglose.costoTotalProduccion), bold:true},
+            {label:"Costo por unidad",                val:fmt(desglose.costoPorUnidad)},
+          ].map(({label,val,bold})=>(
+            <div key={label} style={{background:"#fff", borderRadius:8, padding:"10px 12px", border:`1px solid ${bold?"#1abc9c":"#ddd"}`}}>
+              <p style={{margin:0, fontSize:11, color:"#777"}}>{label}</p>
+              <p style={{margin:"4px 0 0", fontSize:14, fontWeight:bold?700:500, color:bold?"#0e6655":"#222"}}>{val}</p>
+            </div>
+          ))}
+        </div>
+        <div style={{background:"#1a3a5c", borderRadius:10, padding:"14px 18px"}}>
+          <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12}}>
+            <div>
+              <p style={{margin:0, color:"rgba(255,255,255,.65)", fontSize:11}}>Precio por unidad (+{data.markup}%)</p>
+              <p style={{margin:"3px 0 0", color:"#fff", fontSize:16, fontWeight:600}}>{fmt(desglose.precioPorUnidad)}</p>
+            </div>
+            <div>
+              <p style={{margin:0, color:"rgba(255,255,255,.65)", fontSize:11}}>Cantidad</p>
+              <p style={{margin:"3px 0 0", color:"#fff", fontSize:16, fontWeight:600}}>{desglose.cantidad} u.</p>
+            </div>
+            <div>
+              <p style={{margin:0, color:"rgba(255,255,255,.65)", fontSize:11}}>PRECIO TOTAL</p>
+              <p style={{margin:"3px 0 0", color:"#fff", fontSize:22, fontWeight:700}}>{fmt(desglose.precioTotal)}</p>
+            </div>
+          </div>
+        </div>
+      </Seccion>
+
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════
+//  APP
+// ══════════════════════════════════════════════════════════
+export default function App() {
+  const [tab, setTab]       = useState(0);
+  const [cfg, setCfg]       = useState(CFG_DEFAULT);
+  const [mats, setMats]     = useState(MATS_DEFAULT);
+  const [inv, setInv]       = useState(INV_DEFAULT);
+
+  const [cotData, setCotData] = useState({...EMPTY_COT, cotizador:EQUIPO[0]});
+  const changeCot = useCallback((key, val) => setCotData(p => ({...p, [key]:val})), []);
+
+  const [filtroEstado, setFiltroEstado] = useState("Todos");
+  const [filtroCotiz,  setFiltroCotiz]  = useState("Todos");
+  const [invFiltroMat,   setInvFiltroMat]   = useState("Todos");
+  const [invFiltroColor, setInvFiltroColor] = useState("Todos");
+  const [invSoloAlerta,  setInvSoloAlerta]  = useState(false);
+  const [invModal, setInvModal]   = useState(false);
+  const [nuevoRoll, setNuevoRoll] = useState({material:"PLA",tipo:"Estándar",color:"Negro",lote:"",fecha:hoy(),grInicial:1000});
+  const [coloresExtra, setColoresExtra]             = useState([]);
+  const [colorPersonalizado, setColorPersonalizado] = useState("");
+
+  const [editModal, setEditModal] = useState(false);
+  const [editData,  setEditData]  = useState(null);
+  const [pdfModal,  setPdfModal]  = useState(null); // { url, nombre }
+  const changeEdit = useCallback((key, val) => setEditData(p => p?({...p,[key]:val}):p), []);
+
+  const [trabajos, setTrabajos] = useState([
+    { id:"t1", cotizador:"Ricardo", cliente:"María López",   telefono:"76543210", email:"maria@mail.com", ciudad:"Santa Cruz",  pieza:"Soporte de pared",   descripcion:"Soporte TV 55\"", cantidad:2, lineas:[{id:"l1",nombre:"PLA", tipo:"Estándar",color:"Blanco",      gramos:150}], extras:[], horas:3, manoObra:50, markup:40, estado:"Confirmado", fecha:"2025-05-10", fechaEntrega:"2025-05-15", notas:"Urgente" },
+    { id:"t2", cotizador:"Rosario", cliente:"Carlos Méndez", telefono:"71234567", email:"",               ciudad:"Cochabamba",  pieza:"Carcasa electrónica", descripcion:"Caja Arduino",   cantidad:1, lineas:[{id:"l2",nombre:"PETG",tipo:"Estándar",color:"Negro",        gramos:200}], extras:[{id:"e1",descripcion:"Resina UV",costo:15}], horas:5, manoObra:80, markup:50, estado:"Pendiente",  fecha:"2025-06-02", fechaEntrega:"2025-06-20", notas:"" },
+    { id:"t3", cotizador:"Ricardo", cliente:"Ana Torres",    telefono:"79876543", email:"ana@mail.com",   ciudad:"Santa Cruz",  pieza:"Figura decorativa",   descripcion:"Dragón 15cm",    cantidad:3, lineas:[{id:"l3",nombre:"Resina",tipo:"ABS-Like",color:"Transparente",gramos:80},{id:"l4",nombre:"PLA",tipo:"Seda",color:"Dorado",gramos:20}], extras:[], horas:2, manoObra:30, markup:60, estado:"Confirmado", fecha:"2025-06-15", fechaEntrega:"2025-06-25", notas:"" },
+  ]);
+
+  const [datosListos, setDatosListos]   = useState(false);
+  const [guardando, setGuardando]       = useState(false);
+  const [errorAlmacen, setErrorAlmacen] = useState(false);
+
+  // Cargar datos guardados al abrir el artefacto
+  useEffect(() => {
+    let activo = true;
+    (async () => {
+      try {
+        const res = await window.storage.get("cotizador3d-data", true);
+        if (activo && res && res.value) {
+          const datos = JSON.parse(res.value);
+          if (datos.trabajos)     setTrabajos(datos.trabajos);
+          if (datos.inv)          setInv(datos.inv);
+          if (datos.mats)         setMats(datos.mats);
+          if (datos.cfg)          setCfg(datos.cfg);
+          if (datos.coloresExtra) setColoresExtra(datos.coloresExtra);
+        }
+      } catch (err) {
+        // No hay datos guardados todavía: se inicia con los valores de ejemplo.
+      } finally {
+        if (activo) setDatosListos(true);
+      }
+    })();
+    return () => { activo = false; };
+  }, []);
+
+  // Guardar automáticamente (con un pequeño retraso) cada vez que algo cambia
+  useEffect(() => {
+    if (!datosListos) return;
+    setGuardando(true);
+    const timeoutId = setTimeout(() => {
+      (async () => {
+        try {
+          const payload = JSON.stringify({ trabajos, inv, mats, cfg, coloresExtra });
+          const ok = await window.storage.set("cotizador3d-data", payload, true);
+          setErrorAlmacen(!ok);
+        } catch (err) {
+          setErrorAlmacen(true);
+        } finally {
+          setGuardando(false);
+        }
+      })();
+    }, 700);
+    return () => clearTimeout(timeoutId);
+  }, [trabajos, inv, mats, cfg, coloresExtra, datosListos]);
+
+  const dLive = useMemo(()=>calcDesglose(cotData,mats,cfg),[cotData,mats,cfg]);
+  const dEdit = useMemo(()=>editData?calcDesglose(editData,mats,cfg):null,[editData,mats,cfg]);
+
+  if (!datosListos) {
+    return (
+      <div style={{fontFamily:"system-ui,sans-serif",maxWidth:720,margin:"0 auto",padding:"3rem 1rem",background:"#f4f6fa",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}>
+        <div style={{textAlign:"center",color:"#888"}}>
+          <p style={{fontSize:30,margin:0}}>🖨</p>
+          <p style={{fontSize:14,margin:"10px 0 0"}}>Cargando tus datos guardados…</p>
+        </div>
+      </div>
+    );
+  }
+
+  function guardarCotizacion() {
+    if(!cotData.cliente||!cotData.pieza) return alert("Completa cliente y pieza.");
+    const d = calcDesglose(cotData, mats, cfg);
+    setTrabajos(p=>[{...cotData, id:uid(), estado:"Pendiente", fecha:hoy(), total:d.precioTotal}, ...p]);
+    setCotData({...EMPTY_COT, cotizador:cotData.cotizador});
+    setTab(1);
+  }
+  function guardarEdicion() {
+    const d = calcDesglose(editData, mats, cfg);
+    setTrabajos(p=>p.map(t=>t.id===editData.id?{...editData,total:d.precioTotal}:t));
+    setEditModal(false); setEditData(null);
+  }
+  function abrirEdicion(t) {
+    setEditData({...t, extras:t.extras||[], lineas:t.lineas||[lineaVacia()]});
+    setEditModal(true);
+  }
+  function cambiarEstado(id,estado) { setTrabajos(p=>p.map(t=>t.id===id?{...t,estado}:t)); }
+  function updateInv(id,key,val)    { setInv(p=>p.map(r=>r.id===id?{...r,[key]:Math.max(0,Number(val))}:r)); }
+  function agregarRollo() {
+    let colorFinal = nuevoRoll.color;
+    if (colorFinal === "Otro") {
+      const custom = colorPersonalizado.trim();
+      if (!custom) { alert("Escribe el nuevo color antes de agregar el carrete."); return; }
+      colorFinal = custom;
+      setColoresExtra(p => p.includes(custom) ? p : [...p, custom]);
+    }
+    setInv(p=>[...p,{...nuevoRoll,color:colorFinal,id:uid(),grUsado:0,grPurga:0}]);
+    setNuevoRoll({material:"PLA",tipo:"Estándar",color:"Negro",lote:"",fecha:hoy(),grInicial:1000});
+    setColorPersonalizado("");
+    setInvModal(false);
+  }
+  function updateMat(id,val) { setMats(p=>p.map(m=>m.id===id?{...m,costo:Number(val)||0}:m)); }
+
+  const invConAlerta = inv.map(r=>({...r, grDisponible:r.grInicial-r.grUsado-r.grPurga, alerta:(r.grInicial-r.grUsado-r.grPurga)<cfg.alertaGramos}));
+  const rollosAlerta = invConAlerta.filter(r=>r.alerta).length;
+  const matsInv   = ["Todos",...new Set(inv.map(r=>r.material))];
+  const colorsInv = ["Todos",...new Set(inv.map(r=>r.color))];
+  const coloresInvDisponibles = [...COLORES_MAT.filter(c=>c!=="Otro"), ...coloresExtra, "Otro"];
+  const invFiltrado = invConAlerta.filter(r=>
+    (invFiltroMat==="Todos"||r.material===invFiltroMat)&&
+    (invFiltroColor==="Todos"||r.color===invFiltroColor)&&
+    (!invSoloAlerta||r.alerta));
+  const trabajosFiltrados = trabajos.filter(t=>
+    (filtroEstado==="Todos"||t.estado===filtroEstado)&&
+    (filtroCotiz==="Todos"||t.cotizador===filtroCotiz));
+
+  const confirmados  = trabajos.filter(t=>t.estado==="Confirmado");
+  const pendientes   = trabajos.filter(t=>t.estado==="Pendiente");
+  const ingresoTotal = confirmados.reduce((s,t)=>s+calcDesglose(t,mats,cfg).precioTotal,0);
+  const mesActual    = hoy().slice(0,7);
+  const ingresoMes   = confirmados.filter(t=>(t.fecha||"").startsWith(mesActual)).reduce((s,t)=>s+calcDesglose(t,mats,cfg).precioTotal,0);
+  const gananciaNeta = confirmados.reduce((s,t)=>{const d=calcDesglose(t,mats,cfg);return s+d.precioTotal-d.costoTotalProduccion;},0);
+  const costoTotalConfirmados = confirmados.reduce((s,t)=>s+calcDesglose(t,mats,cfg).costoTotalProduccion,0);
+  const matStats={};
+  trabajos.forEach(t=>(t.lineas||[]).forEach(l=>{
+    if(!matStats[l.nombre]) matStats[l.nombre]={usos:0,gramos:0};
+    matStats[l.nombre].usos++;
+    matStats[l.nombre].gramos+=(l.gramos||0)*(t.cantidad||1);
+  }));
+  const topMat=Object.entries(matStats).sort((a,b)=>b[1].usos-a[1].usos);
+  const meses=["Ene","Feb","Mar","Abr","May","Jun"];
+  const ingresosPorMes=meses.map((_,i)=>{
+    const mes=`2025-0${i+1}`;
+    return confirmados.filter(t=>(t.fecha||"").startsWith(mes)).reduce((s,t)=>s+calcDesglose(t,mats,cfg).precioTotal,0);
+  });
+  const maxIngreso=Math.max(...ingresosPorMes,1);
+
+  const inp = {padding:"9px 11px",borderRadius:8,border:"1.5px solid #ccc",background:"#fff",color:"#222",fontSize:14,width:"100%",boxSizing:"border-box"};
+  const sml = {...inp,fontSize:13,padding:"7px 9px"};
+
+  const TAB_COLORS = ["#4A90D9","#27ae60","#9b59b6","#e67e22","#555"];
+
+  return (
+    <div style={{fontFamily:"system-ui,sans-serif",maxWidth:720,margin:"0 auto",padding:"1rem 0",background:"#f4f6fa",minHeight:"100vh"}}>
+      <div style={{padding:"0 12px"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+          <h2 style={{fontSize:18,fontWeight:700,margin:0,color:"#1a3a5c"}}>🖨 Cotizador 3D Pro</h2>
+          <span style={{fontSize:11,color:errorAlmacen?"#e74c3c":"#9aa5b1",fontWeight:500}}>
+            {errorAlmacen ? "⚠ Error al guardar" : guardando ? "💾 Guardando…" : "💾 Guardado"}
+          </span>
+        </div>
+        <p style={{fontSize:11,color:"#9aa5b1",margin:"0 0 14px"}}>Tus datos se guardan en la nube y son visibles desde cualquier dispositivo con este link.</p>
+
+        {/* TABS */}
+        <div style={{display:"flex",gap:0,marginBottom:"1.5rem",background:"#fff",borderRadius:12,padding:4,boxShadow:"0 1px 4px rgba(0,0,0,.1)",overflowX:"auto"}}>
+          {TABS.map((t,i)=>(
+            <button key={t} onClick={()=>setTab(i)} style={{flex:1,padding:"8px 10px",border:"none",borderRadius:9,
+              background:tab===i?TAB_COLORS[i]:"transparent",
+              color:tab===i?"#fff":"#666",
+              fontWeight:tab===i?600:400,cursor:"pointer",fontSize:12,whiteSpace:"nowrap",position:"relative",transition:"all .15s"}}>
+              {t}
+              {t==="Inventario"&&rollosAlerta>0&&
+                <span style={{position:"absolute",top:2,right:2,background:"#e74c3c",color:"#fff",fontSize:9,borderRadius:10,padding:"1px 4px",lineHeight:"1.4"}}>{rollosAlerta}</span>}
+            </button>
+          ))}
+        </div>
+
+        {/* ══ COTIZADOR ══ */}
+        {tab===0&&(
+          <div>
+            <FormCotizacion data={cotData} onChange={changeCot} mats={mats} desglose={dLive}/>
+            <div style={{display:"flex",gap:10,marginTop:14}}>
+              <button onClick={guardarCotizacion} style={{flex:1,padding:"12px",background:"#4A90D9",color:"#fff",border:"none",borderRadius:10,fontWeight:700,cursor:"pointer",fontSize:14}}>Guardar cotización</button>
+              <button onClick={()=>setCotData({...EMPTY_COT,cotizador:cotData.cotizador})} style={{padding:"12px 18px",background:"#fff",border:"1.5px solid #ccc",borderRadius:10,cursor:"pointer",color:"#666",fontSize:14}}>Limpiar</button>
+            </div>
+          </div>
+        )}
+
+        {/* ══ TRABAJOS ══ */}
+        {tab===1&&(
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",background:"#fff",borderRadius:10,padding:"10px 14px",boxShadow:"0 1px 3px rgba(0,0,0,.08)"}}>
+              {["Todos","Pendiente","Confirmado","Cancelado"].map(e=>(
+                <button key={e} onClick={()=>setFiltroEstado(e)} style={{padding:"5px 12px",borderRadius:20,fontSize:12,cursor:"pointer",
+                  border:filtroEstado===e?"none":"1.5px solid #ddd",
+                  background:filtroEstado===e?(estadoColor[e]||"#4A90D9"):"#f5f5f5",
+                  color:filtroEstado===e?"#fff":"#555",fontWeight:filtroEstado===e?600:400}}>{e}</button>
+              ))}
+              <select value={filtroCotiz} onChange={e=>setFiltroCotiz(e.target.value)} style={{...sml,width:"auto"}}>
+                <option value="Todos">Todos</option>
+                {EQUIPO.map(n=><option key={n}>{n}</option>)}
+              </select>
+              <button onClick={()=>setTab(0)} style={{marginLeft:"auto",padding:"7px 14px",background:"#4A90D9",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:600}}>+ Nueva</button>
+            </div>
+
+            {trabajosFiltrados.length===0&&<div style={{textAlign:"center",padding:"32px",color:"#aaa",fontSize:14}}>No hay trabajos con estos filtros.</div>}
+
+            {trabajosFiltrados.map(t=>{
+              const d=calcDesglose(t,mats,cfg);
+              const sc=estadoColor[t.estado];
+              return(
+                <div key={t.id} style={{background:"#fff",border:`1.5px solid ${sc}30`,borderLeft:`4px solid ${sc}`,borderRadius:10,padding:"12px 16px",boxShadow:"0 1px 3px rgba(0,0,0,.07)"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+                    <div>
+                      <p style={{margin:0,fontWeight:700,fontSize:15,color:"#222"}}>{t.pieza}</p>
+                      <p style={{margin:"2px 0 0",fontSize:13,color:"#666"}}>{t.cliente}{t.ciudad?` · ${t.ciudad}`:""}{t.telefono?` · ${t.telefono}`:""}</p>
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:3}}>
+                      <span style={{padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:600,background:sc+"22",color:sc}}>{t.estado}</span>
+                      <span style={{fontSize:11,color:"#aaa"}}>por {t.cotizador}</span>
+                    </div>
+                  </div>
+                  <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:8}}>
+                    {(t.lineas||[]).map(l=>(
+                      <span key={l.id} style={{fontSize:11,background:"#f0eeff",padding:"3px 8px",borderRadius:6,color:"#9b59b6"}}>{l.nombre} {l.tipo} · {l.color} · {l.gramos}g</span>
+                    ))}
+                    {(t.extras||[]).filter(e=>e.descripcion).map(e=>(
+                      <span key={e.id} style={{fontSize:11,background:"#fff3e0",padding:"3px 8px",borderRadius:6,color:"#e67e22"}}>+{e.descripcion} Bs{e.costo}</span>
+                    ))}
+                    {t.fechaEntrega&&<span style={{fontSize:11,background:"#f0f4ff",padding:"3px 8px",borderRadius:6,color:"#4A90D9"}}>📅 {t.fechaEntrega}</span>}
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:10,background:"#f8f9fa",borderRadius:8,padding:"8px 12px"}}>
+                    <div><p style={{margin:0,fontSize:10,color:"#aaa"}}>Costo producción</p><p style={{margin:0,fontSize:13,fontWeight:600,color:"#555"}}>{fmt(d.costoTotalProduccion)}</p></div>
+                    <div><p style={{margin:0,fontSize:10,color:"#aaa"}}>Precio por unidad</p><p style={{margin:0,fontSize:13,fontWeight:600,color:"#555"}}>{fmt(d.precioPorUnidad)}</p></div>
+                    <div><p style={{margin:0,fontSize:10,color:"#aaa"}}>TOTAL ({d.cantidad} u.)</p><p style={{margin:0,fontSize:15,fontWeight:700,color:"#4A90D9"}}>{fmt(d.precioTotal)}</p></div>
+                  </div>
+                  <div style={{display:"flex",justifyContent:"flex-end",gap:6,flexWrap:"wrap"}}>
+                    <button onClick={()=>abrirEdicion(t)} style={{padding:"5px 12px",fontSize:12,borderRadius:6,cursor:"pointer",background:"#eef4ff",border:"1px solid #4A90D9",color:"#4A90D9",fontWeight:600}}>✏️ Editar</button>
+                    {["Pendiente","Confirmado","Cancelado"].filter(e=>e!==t.estado).map(e=>(
+                      <button key={e} onClick={()=>cambiarEstado(t.id,e)} style={{padding:"5px 10px",fontSize:12,borderRadius:6,cursor:"pointer",background:`${estadoColor[e]}15`,border:`1px solid ${estadoColor[e]}`,color:estadoColor[e],fontWeight:600}}>{e}</button>
+                    ))}
+                    <button onClick={()=>{
+                      const d2=calcDesglose(t,mats,cfg);
+                      const resM2=(t.lineas||[]).map(l=>`${l.nombre} ${l.tipo} ${l.color} (${l.gramos}g)`).join(" + ");
+                      const extrasRows2=(t.extras||[]).filter(e=>e.descripcion).map(e=>`<tr><td>${e.descripcion}</td><td style="text-align:right">—</td><td style="text-align:right">Bs ${Number(e.costo).toFixed(2)}</td></tr>`).join("");
+                      const htmlPrev=`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Presupuesto #${String(t.id).slice(-6)}</title>
+<style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:Arial,Helvetica,sans-serif;color:#222;font-size:13px;background:#f2f2f2;}
+.page{width:8.5in;min-height:11in;margin:0 auto;padding:0.6in 0.65in;background:#fff;}
+.logo-box{border:2px dashed #ccc;height:0.95in;display:flex;align-items:center;justify-content:center;color:#bbb;font-size:12px;border-radius:6px;margin-bottom:22px;}
+.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;border-bottom:2px solid #1a3a5c;padding-bottom:14px;}
+.h-title{font-size:21px;font-weight:700;color:#1a3a5c;margin-bottom:3px;}
+.h-ref{font-size:12px;color:#999;}
+.badge{display:inline-block;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700;background:#e8f4fd;color:#1a6fc4;}
+.st{font-size:10px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.8px;margin:16px 0 8px;}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:6px 24px;}
+.field label{font-size:10px;color:#aaa;display:block;margin-bottom:1px;}
+.field span{font-size:13px;font-weight:500;}
+.div{border:none;border-top:1px solid #eee;margin:14px 0;}
+table{width:100%;border-collapse:collapse;margin-top:4px;}
+thead th{background:#1a3a5c;color:#fff;padding:9px 10px;font-size:12px;text-align:left;}
+tbody tr:nth-child(even){background:#f9f9f9;}
+tbody td{padding:9px 10px;border-bottom:1px solid #eee;font-size:13px;}
+.subtotal-row td{font-weight:600;background:#f0f4f8;}
+.total-box{background:#1a3a5c;color:#fff;border-radius:8px;padding:16px 22px;display:flex;justify-content:space-between;align-items:center;margin-top:14px;}
+.nota{background:#fffbe6;border-left:3px solid #f0a500;padding:9px 12px;border-radius:4px;font-size:12px;margin-top:12px;}
+.footer{margin-top:36px;font-size:10px;color:#bbb;text-align:center;border-top:1px solid #eee;padding-top:12px;}
+@media print{@page{size:letter;margin:0;}body{background:#fff;}.page{margin:0;}}</style></head>
+<body><div class="page">
+<div class="logo-box">[ ESPACIO PARA LOGO ]</div>
+<div class="header"><div><div class="h-title">Presupuesto de Impresión 3D</div><div class="h-ref">Ref. #${String(t.id).slice(-6)} · Fecha: ${t.fecha||hoy()}</div></div>
+<div style="text-align:right"><div style="font-weight:600;color:#1a3a5c;font-size:15px">${t.cotizador}</div><div style="font-size:11px;color:#999;margin-bottom:5px">Cotizador</div><span class="badge">${t.estado}</span></div></div>
+<div class="st">Datos del cliente</div>
+<div class="grid2">
+<div class="field"><label>Nombre</label><span>${t.cliente}</span></div>
+<div class="field"><label>Teléfono</label><span>${t.telefono||"—"}</span></div>
+<div class="field"><label>Email</label><span>${t.email||"—"}</span></div>
+<div class="field"><label>Ciudad</label><span>${t.ciudad||"—"}</span></div></div>
+<hr class="div">
+<div class="st">Detalle del trabajo</div>
+<div class="grid2">
+<div class="field"><label>Pieza</label><span>${t.pieza}${t.descripcion?" — "+t.descripcion:""}</span></div>
+<div class="field"><label>Material(es)</label><span>${resM2}</span></div>
+<div class="field"><label>Cantidad</label><span>${d2.cantidad} ${d2.cantidad>1?"piezas":"pieza"}</span></div>
+${t.fechaEntrega?`<div class="field"><label>Entrega</label><span>${t.fechaEntrega}</span></div>`:""}
+</div><hr class="div">
+<div class="st">Desglose de costos</div>
+<table><thead><tr><th>Concepto</th><th style="text-align:right">Total producción</th><th style="text-align:right">Por unidad</th></tr></thead>
+<tbody>
+<tr><td>Material</td><td style="text-align:right">Bs ${d2.cMat.toFixed(2)}</td><td style="text-align:right">Bs ${(d2.cMat/d2.cantidad).toFixed(2)}</td></tr>
+<tr><td>Electricidad + Desgaste (${t.horas}h)</td><td style="text-align:right">Bs ${d2.cFijo.toFixed(2)}</td><td style="text-align:right">Bs ${(d2.cFijo/d2.cantidad).toFixed(2)}</td></tr>
+<tr><td>Mano de obra</td><td style="text-align:right">Bs ${d2.cMO.toFixed(2)}</td><td style="text-align:right">Bs ${(d2.cMO/d2.cantidad).toFixed(2)}</td></tr>
+${extrasRows2}
+<tr class="subtotal-row"><td>Costo total producción</td><td style="text-align:right">Bs ${d2.costoTotalProduccion.toFixed(2)}</td><td style="text-align:right">Bs ${d2.costoPorUnidad.toFixed(2)}</td></tr>
+<tr class="subtotal-row"><td>Precio con ganancia (+${t.markup}%)</td><td style="text-align:right"></td><td style="text-align:right">Bs ${d2.precioPorUnidad.toFixed(2)}</td></tr>
+</tbody></table>
+<div class="total-box"><div><div style="font-size:12px;opacity:.75">TOTAL (${d2.cantidad} ${d2.cantidad>1?"piezas":"pieza"})</div><div style="font-size:24px;font-weight:700">Bs ${d2.precioTotal.toFixed(2)}</div></div>
+<div style="text-align:right"><div style="font-size:12px;opacity:.75">Precio por unidad</div><div style="font-size:16px;font-weight:600">Bs ${d2.precioPorUnidad.toFixed(2)}</div></div></div>
+${t.notas?`<div class="nota"><strong>Notas:</strong> ${t.notas}</div>`:""}
+<div class="footer">Este presupuesto es válido por 15 días · Santa Cruz, Bolivia · Cotizado por: ${t.cotizador}</div>
+</div></body></html>`;
+                      try {
+                        const blob2=new Blob([htmlPrev],{type:"text/html"});
+                        const url2=URL.createObjectURL(blob2);
+                        setPdfModal({url:url2,nombre:`Presupuesto-${t.pieza?.replace(/\s+/g,"-")||"3D"}-${String(t.id).slice(-6)}.html`});
+                      } catch(e){ alert("No se pudo generar el documento."); }
+                    }} style={{padding:"5px 14px",fontSize:12,borderRadius:6,cursor:"pointer",background:"#1a3a5c",border:"none",color:"#fff",fontWeight:600}}>🖨 PDF</button>
+                  </div>
+                  {t.notas&&<p style={{margin:"6px 0 0",fontSize:11,color:"#aaa"}}>📝 {t.notas}</p>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* ══ INVENTARIO ══ */}
+        {tab===2&&(
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+              {[
+                {label:"Disponible",val:`${invConAlerta.reduce((s,r)=>s+r.grDisponible,0).toFixed(0)}g`,color:"#27ae60",bg:"#edfbf3"},
+                {label:"Usado",     val:`${inv.reduce((s,r)=>s+r.grUsado,0).toFixed(0)}g`,             color:"#4A90D9",bg:"#eef4ff"},
+                {label:"Purga",     val:`${inv.reduce((s,r)=>s+r.grPurga,0).toFixed(0)}g`,             color:"#e67e22",bg:"#fff8ee"},
+                {label:"Alertas",   val:rollosAlerta,                                                   color:"#e74c3c",bg:"#fde8e8"},
+              ].map(({label,val,color,bg})=>(
+                <div key={label} style={{background:bg,borderRadius:10,padding:"10px 12px",border:`1.5px solid ${color}40`}}>
+                  <p style={{margin:0,fontSize:11,color,fontWeight:600}}>{label}</p>
+                  <p style={{margin:"4px 0 0",fontSize:18,fontWeight:700,color}}>{val}</p>
+                </div>
+              ))}
+            </div>
+
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",background:"#fff",borderRadius:10,padding:"10px 14px",boxShadow:"0 1px 3px rgba(0,0,0,.08)"}}>
+              <span style={{fontSize:12,color:"#888",fontWeight:600}}>🔍 Filtrar:</span>
+              <select value={invFiltroMat} onChange={e=>setInvFiltroMat(e.target.value)} style={{...sml,width:"auto"}}>
+                {matsInv.map(m=><option key={m}>{m}</option>)}
+              </select>
+              <select value={invFiltroColor} onChange={e=>setInvFiltroColor(e.target.value)} style={{...sml,width:"auto"}}>
+                {colorsInv.map(c=><option key={c}>{c}</option>)}
+              </select>
+              <label style={{display:"flex",alignItems:"center",gap:6,fontSize:13,cursor:"pointer",color:"#e74c3c",fontWeight:600}}>
+                <input type="checkbox" checked={invSoloAlerta} onChange={e=>setInvSoloAlerta(e.target.checked)}/> Solo alertas
+              </label>
+              <button onClick={()=>setInvModal(true)} style={{marginLeft:"auto",padding:"7px 14px",background:"#9b59b6",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:600}}>+ Agregar carrete</button>
+            </div>
+
+            {rollosAlerta>0&&!invSoloAlerta&&(
+              <div style={{background:"#fef3cd",border:"1.5px solid #f0a500",borderRadius:10,padding:"10px 14px",fontSize:13,color:"#7a4f01",fontWeight:500}}>
+                ⚠️ <strong>{rollosAlerta} carrete{rollosAlerta>1?"s":""}</strong> con menos de {cfg.alertaGramos}g disponible.
+              </div>
+            )}
+
+            {invFiltrado.length===0&&<p style={{textAlign:"center",color:"#aaa",padding:"24px",fontSize:13}}>No hay carretes con esos filtros.</p>}
+
+            {invFiltrado.map(r=>{
+              const pct=Math.max(0,Math.min(100,(r.grDisponible/r.grInicial)*100));
+              const barColor=r.alerta?"#e74c3c":pct<40?"#e67e22":"#27ae60";
+              return(
+                <div key={r.id} style={{background:"#fff",border:r.alerta?"1.5px solid #e74c3c":"1.5px solid #e0d0f5",borderLeft:`4px solid ${barColor}`,borderRadius:10,padding:"12px 16px"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+                    <div>
+                      <p style={{margin:0,fontWeight:700,fontSize:15,color:"#9b59b6"}}>{r.material} <span style={{fontWeight:400,fontSize:13,color:"#888"}}>{r.tipo} · {r.color}</span></p>
+                      <p style={{margin:"2px 0 0",fontSize:12,color:"#aaa"}}>Lote: {r.lote||"—"} · Ingreso: {r.fecha}</p>
+                    </div>
+                    {r.alerta&&<span style={{padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:600,background:"#fde8e8",color:"#e74c3c"}}>⚠ Reponer</span>}
+                  </div>
+                  <div style={{height:8,background:"#f0f0f0",borderRadius:4,marginBottom:10}}>
+                    <div style={{height:"100%",width:`${pct}%`,background:barColor,borderRadius:4,transition:"width .3s"}}/>
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:10}}>
+                    {[{l:"Inicial",v:`${r.grInicial}g`,c:"#555"},{l:"Usado",v:`${r.grUsado}g`,c:"#4A90D9"},{l:"Purga",v:`${r.grPurga}g`,c:"#e67e22"},{l:"Disponible",v:`${r.grDisponible.toFixed(0)}g`,c:barColor}].map(({l,v,c})=>(
+                      <div key={l}><p style={{margin:0,fontSize:10,color:"#aaa"}}>{l}</p><p style={{margin:0,fontSize:14,fontWeight:700,color:c}}>{v}</p></div>
+                    ))}
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                    <div>
+                      <label style={{fontSize:11,color:"#888",display:"block",marginBottom:3}}>Actualizar gramos usados</label>
+                      <input style={inp} type="number" min={0} max={r.grInicial} value={r.grUsado} onChange={e=>updateInv(r.id,"grUsado",e.target.value)}/>
+                    </div>
+                    <div>
+                      <label style={{fontSize:11,color:"#888",display:"block",marginBottom:3}}>Gramos en purga</label>
+                      <input style={inp} type="number" min={0} value={r.grPurga} onChange={e=>updateInv(r.id,"grPurga",e.target.value)}/>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
+            {invModal&&(
+              <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.55)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:999}}>
+                <div style={{background:"#fff",borderRadius:14,padding:24,width:360,border:"1.5px solid #9b59b6"}}>
+                  <p style={{margin:"0 0 14px",fontWeight:700,fontSize:16,color:"#9b59b6"}}>🧵 Agregar carrete</p>
+                  <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                    {[
+                      {label:"Material", el:<select style={inp} value={nuevoRoll.material} onChange={e=>setNuevoRoll(p=>({...p,material:e.target.value,tipo:(TIPOS_MAT[e.target.value]||["Estándar"])[0]}))}>{MATS_DEFAULT.map(m=><option key={m.id}>{m.nombre}</option>)}</select>},
+                      {label:"Variante", el:<select style={inp} value={nuevoRoll.tipo} onChange={e=>setNuevoRoll(p=>({...p,tipo:e.target.value}))}>{(TIPOS_MAT[nuevoRoll.material]||["Estándar"]).map(t=><option key={t}>{t}</option>)}</select>},
+                      {label:"Color",    el:<select style={inp} value={nuevoRoll.color} onChange={e=>setNuevoRoll(p=>({...p,color:e.target.value}))}>{coloresInvDisponibles.map(c=><option key={c}>{c}</option>)}</select>},
+                      {label:"N° de lote",el:<input style={inp} placeholder="Ej: L-005" value={nuevoRoll.lote} onChange={e=>setNuevoRoll(p=>({...p,lote:e.target.value}))}/>},
+                      {label:"Fecha de compra",el:<input style={inp} type="date" value={nuevoRoll.fecha} onChange={e=>setNuevoRoll(p=>({...p,fecha:e.target.value}))}/>},
+                      {label:"Gramos iniciales",el:<input style={inp} type="number" min={100} value={nuevoRoll.grInicial} onChange={e=>setNuevoRoll(p=>({...p,grInicial:Number(e.target.value)}))}/>},
+                    ].map(({label,el})=>(
+                      <div key={label}><label style={{fontSize:12,color:"#555",display:"block",marginBottom:3,fontWeight:500}}>{label}</label>{el}</div>
+                    ))}
+                    {nuevoRoll.color==="Otro"&&(
+                      <div>
+                        <label style={{fontSize:12,color:"#555",display:"block",marginBottom:3,fontWeight:500}}>Especifica el nuevo color</label>
+                        <input style={inp} placeholder="Ej: Turquesa, Vino tinto..."
+                          value={colorPersonalizado}
+                          onChange={e=>setColorPersonalizado(e.target.value)}
+                          autoFocus/>
+                      </div>
+                    )}
+                  </div>
+                  <div style={{display:"flex",gap:10,marginTop:16}}>
+                    <button onClick={agregarRollo} style={{flex:1,padding:"10px",background:"#9b59b6",color:"#fff",border:"none",borderRadius:8,fontWeight:700,cursor:"pointer",fontSize:14}}>Agregar</button>
+                    <button onClick={()=>{setInvModal(false);setColorPersonalizado("");}} style={{padding:"10px 16px",background:"#f5f5f5",border:"1px solid #ddd",borderRadius:8,cursor:"pointer",color:"#666",fontSize:14}}>Cancelar</button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ══ DASHBOARD ══ */}
+        {tab===3&&(
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:10}}>
+              {[
+                {label:"Ingresos totales",val:fmt(ingresoTotal),color:"#27ae60",bg:"#edfbf3",icon:"💰"},
+                {label:`Ingresos ${meses[new Date().getMonth()]}`,val:fmt(ingresoMes),color:"#4A90D9",bg:"#eef4ff",icon:"📅"},
+                {label:"Confirmados",val:confirmados.length,color:"#27ae60",bg:"#edfbf3",icon:"✅"},
+                {label:"Pendientes", val:pendientes.length,color:"#e67e22",bg:"#fff8ee",icon:"⏳"},
+              ].map(({label,val,color,bg,icon})=>(
+                <div key={label} style={{background:bg,borderRadius:10,padding:"12px 14px",border:`1.5px solid ${color}40`}}>
+                  <p style={{margin:0,fontSize:12,color,fontWeight:600}}>{icon} {label}</p>
+                  <p style={{margin:"4px 0 0",fontSize:20,fontWeight:700,color}}>{val}</p>
+                </div>
+              ))}
+            </div>
+            <div style={{background:"#fff",borderRadius:12,padding:"14px 16px",boxShadow:"0 1px 3px rgba(0,0,0,.08)"}}>
+              <p style={{margin:"0 0 12px",fontSize:13,fontWeight:600,color:"#1a3a5c"}}>📈 Ingresos confirmados por mes (2025)</p>
+              <div style={{display:"flex",alignItems:"flex-end",gap:8,height:110}}>
+                {meses.map((m,i)=>{
+                  const h=ingresosPorMes[i]?Math.max((ingresosPorMes[i]/maxIngreso)*90,8):4;
+                  return(
+                    <div key={m} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
+                      <span style={{fontSize:10,color:"#888",textAlign:"center"}}>{ingresosPorMes[i]>0?Math.round(ingresosPorMes[i]):""}</span>
+                      <div style={{width:"100%",height:`${h}%`,background:i===new Date().getMonth()?"#4A90D9":"#4A90D950",borderRadius:"4px 4px 0 0",minHeight:4}}/>
+                      <span style={{fontSize:11,color:"#888"}}>{m}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+              <div style={{background:"#fff",borderRadius:12,padding:"14px 16px",boxShadow:"0 1px 3px rgba(0,0,0,.08)"}}>
+                <p style={{margin:"0 0 10px",fontSize:13,fontWeight:600,color:"#1a3a5c"}}>Estado de trabajos</p>
+                {[{label:"Confirmados",n:confirmados.length,color:"#27ae60"},{label:"Pendientes",n:pendientes.length,color:"#e67e22"},{label:"Cancelados",n:trabajos.filter(t=>t.estado==="Cancelado").length,color:"#e74c3c"}].map(({label,n,color})=>(
+                  <div key={label} style={{marginBottom:8}}>
+                    <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}><span style={{color,fontWeight:600}}>{label}</span><span style={{fontWeight:700}}>{n}</span></div>
+                    <div style={{height:6,background:"#f0f0f0",borderRadius:3,marginTop:3}}>
+                      <div style={{height:"100%",width:`${(n/Math.max(trabajos.length,1))*100}%`,background:color,borderRadius:3}}/>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={{background:"#fff",borderRadius:12,padding:"14px 16px",boxShadow:"0 1px 3px rgba(0,0,0,.08)"}}>
+                <p style={{margin:"0 0 10px",fontSize:13,fontWeight:600,color:"#1a3a5c"}}>Materiales más usados</p>
+                {topMat.map(([mat,s],i)=>(
+                  <div key={mat} style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,padding:"4px 0",borderBottom:"1px solid #f0f0f0"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <div style={{width:8,height:8,borderRadius:2,background:BADGE_COLORS[i%BADGE_COLORS.length]}}/>
+                      <span style={{fontSize:13,fontWeight:600}}>{mat}</span>
+                    </div>
+                    <span style={{fontSize:12,color:"#4A90D9",fontWeight:600}}>{s.gramos}g</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={{background:"#edfbf3",borderRadius:12,padding:"14px 16px",border:"1.5px solid #27ae6040"}}>
+              <p style={{margin:"0 0 6px",fontSize:13,fontWeight:600,color:"#1a6640"}}>💚 Ganancia neta estimada (confirmados)</p>
+              <p style={{margin:0,fontSize:26,fontWeight:700,color:"#27ae60"}}>{fmt(gananciaNeta)}</p>
+            </div>
+
+            {/* Desglose detallado de la ganancia neta */}
+            <div style={{background:"#fff",borderRadius:12,padding:"14px 16px",boxShadow:"0 1px 3px rgba(0,0,0,.08)"}}>
+              <p style={{margin:"0 0 2px",fontSize:13,fontWeight:600,color:"#1a3a5c"}}>🧮 Desglose de la ganancia neta</p>
+              <p style={{margin:"0 0 10px",fontSize:11,color:"#999"}}>Por cada trabajo confirmado: Ganancia = Precio cobrado − Costo de producción.</p>
+
+              {confirmados.length===0 ? (
+                <p style={{fontSize:12,color:"#aaa",textAlign:"center",padding:"14px 0"}}>Aún no hay trabajos confirmados.</p>
+              ) : (
+                <>
+                  <div style={{display:"grid",gridTemplateColumns:"1.6fr 1fr 1fr 1fr",gap:6,padding:"0 0 6px",borderBottom:"1.5px solid #eee"}}>
+                    <span style={{fontSize:10,color:"#aaa",fontWeight:600}}>TRABAJO</span>
+                    <span style={{fontSize:10,color:"#aaa",fontWeight:600,textAlign:"right"}}>COBRADO</span>
+                    <span style={{fontSize:10,color:"#aaa",fontWeight:600,textAlign:"right"}}>COSTO</span>
+                    <span style={{fontSize:10,color:"#aaa",fontWeight:600,textAlign:"right"}}>GANANCIA</span>
+                  </div>
+                  {confirmados.map(t=>{
+                    const d = calcDesglose(t,mats,cfg);
+                    const ganancia = d.precioTotal - d.costoTotalProduccion;
+                    return (
+                      <div key={t.id} style={{display:"grid",gridTemplateColumns:"1.6fr 1fr 1fr 1fr",gap:6,alignItems:"center",padding:"8px 0",borderBottom:"1px solid #f5f5f5"}}>
+                        <div>
+                          <p style={{margin:0,fontSize:12,fontWeight:600,color:"#333"}}>{t.pieza}</p>
+                          <p style={{margin:0,fontSize:10,color:"#aaa"}}>{t.cliente}</p>
+                        </div>
+                        <span style={{fontSize:12,fontWeight:600,color:"#4A90D9",textAlign:"right"}}>{fmt(d.precioTotal)}</span>
+                        <span style={{fontSize:12,fontWeight:600,color:"#e67e22",textAlign:"right"}}>{fmt(d.costoTotalProduccion)}</span>
+                        <span style={{fontSize:13,fontWeight:700,color:"#27ae60",textAlign:"right"}}>{fmt(ganancia)}</span>
+                      </div>
+                    );
+                  })}
+                  <div style={{display:"grid",gridTemplateColumns:"1.6fr 1fr 1fr 1fr",gap:6,marginTop:8,paddingTop:8,borderTop:"2px solid #27ae60"}}>
+                    <span style={{fontSize:12,fontWeight:700,color:"#1a3a5c"}}>TOTAL</span>
+                    <span style={{fontSize:12,fontWeight:700,color:"#4A90D9",textAlign:"right"}}>{fmt(ingresoTotal)}</span>
+                    <span style={{fontSize:12,fontWeight:700,color:"#e67e22",textAlign:"right"}}>{fmt(costoTotalConfirmados)}</span>
+                    <span style={{fontSize:13,fontWeight:700,color:"#27ae60",textAlign:"right"}}>{fmt(gananciaNeta)}</span>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ══ CONFIGURACIÓN ══ */}
+        {tab===4&&(
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            <Seccion tipo="params" titulo="⚙️ Costos fijos de operación" subtitulo="se calculan automáticamente por hora">
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+                {[
+                  {label:"Electricidad (Bs/kWh)",     key:"electricidadKwh",step:0.001},
+                  {label:"Consumo impresora (kW)",     key:"consumoKw",      step:0.01},
+                  {label:"Desgaste máquina (Bs/hora)",key:"desgastePorHora",step:0.5},
+                ].map(({label,key,step})=>(
+                  <div key={key}>
+                    <label style={{fontSize:12,color:"#666",display:"block",marginBottom:4,fontWeight:500}}>{label}</label>
+                    <input style={inp} type="number" min={0} step={step} value={cfg[key]} onChange={e=>setCfg(p=>({...p,[key]:Number(e.target.value)}))}/>
+                  </div>
+                ))}
+              </div>
+              <div style={{marginTop:10,background:"#fff",borderRadius:8,padding:"10px 14px",fontSize:13,color:"#666",border:"1px solid #ddd"}}>
+                Costo por hora: <strong style={{color:"#333"}}>{fmt(cfg.electricidadKwh*cfg.consumoKw+cfg.desgastePorHora)}</strong>
+              </div>
+            </Seccion>
+            <Seccion tipo="extra" titulo="🔔 Alerta de inventario">
+              <div>
+                <label style={{fontSize:12,color:"#666",display:"block",marginBottom:4,fontWeight:500}}>Notificar cuando queden menos de (gramos)</label>
+                <input style={{...inp,maxWidth:200}} type="number" min={10} value={cfg.alertaGramos} onChange={e=>setCfg(p=>({...p,alertaGramos:Number(e.target.value)}))}/>
+              </div>
+            </Seccion>
+            <Seccion tipo="material" titulo="🧵 Precio de filamentos (Bs/kg)">
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                {mats.map(m=>(
+                  <div key={m.id} style={{display:"flex",alignItems:"center",gap:10,background:"#fff",borderRadius:8,padding:"8px 12px",border:"1px solid #ddd"}}>
+                    <span style={{fontSize:14,fontWeight:700,minWidth:55,color:"#9b59b6"}}>{m.nombre}</span>
+                    <div style={{flex:1,minWidth:96}}>
+                      <label style={{fontSize:11,color:"#aaa"}}>Bs/kg</label>
+                      <input style={{...inp,padding:"8px 10px",fontSize:15,minWidth:86,width:"100%",textAlign:"right"}} type="number" min={0} value={m.costo} onChange={e=>updateMat(m.id,e.target.value)}/>
+                    </div>
+                    <span style={{fontSize:11,color:"#aaa",whiteSpace:"nowrap"}}>{fmt(m.costo/1000)}/g</span>
+                  </div>
+                ))}
+              </div>
+            </Seccion>
+          </div>
+        )}
+
+        {/* ══ MODAL PDF ══ */}
+        {pdfModal&&(
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.75)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",zIndex:2000,padding:"16px"}}>
+            <div style={{background:"#fff",borderRadius:14,width:"100%",maxWidth:760,maxHeight:"90vh",display:"flex",flexDirection:"column",overflow:"hidden",boxShadow:"0 8px 40px rgba(0,0,0,.4)"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 16px",borderBottom:"1.5px solid #eee",background:"#1a3a5c"}}>
+                <span style={{fontWeight:700,fontSize:15,color:"#fff"}}>🖨 Vista previa del presupuesto</span>
+                <div style={{display:"flex",gap:8}}>
+                  <a href={pdfModal.url} download={pdfModal.nombre}
+                    style={{padding:"6px 14px",background:"#27ae60",color:"#fff",borderRadius:8,fontWeight:700,fontSize:13,textDecoration:"none",display:"flex",alignItems:"center",gap:4}}>
+                    ⬇ Descargar HTML
+                  </a>
+                  <button onClick={()=>{URL.revokeObjectURL(pdfModal.url);setPdfModal(null);}}
+                    style={{padding:"6px 12px",borderRadius:8,border:"none",background:"#e74c3c",color:"#fff",cursor:"pointer",fontWeight:700,fontSize:13}}>✕ Cerrar</button>
+                </div>
+              </div>
+              <p style={{margin:0,padding:"8px 16px",fontSize:11,color:"#888",background:"#f8f9fa",borderBottom:"1px solid #eee"}}>
+                💡 Para guardar como PDF: descarga el archivo, ábrelo en tu navegador y usa <strong>Archivo → Imprimir → Guardar como PDF</strong>.
+              </p>
+              <iframe src={pdfModal.url} style={{flex:1,border:"none",minHeight:500}} title="Vista previa PDF"/>
+            </div>
+          </div>
+        )}
+
+        {/* ══ MODAL EDICIÓN ══ */}
+        {editModal&&editData&&(
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.6)",display:"flex",alignItems:"flex-start",justifyContent:"center",zIndex:1000,overflowY:"auto",padding:"16px 8px"}}>
+            <div style={{background:"#f4f6fa",borderRadius:14,padding:16,width:"100%",maxWidth:700,border:"2px solid #27ae60"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+                <p style={{margin:0,fontWeight:700,fontSize:17,color:"#1a3a5c"}}>✏️ Editar cotización</p>
+                <button onClick={()=>{setEditModal(false);setEditData(null);}} style={{padding:"5px 12px",borderRadius:8,border:"1px solid #ddd",background:"#fff",cursor:"pointer",color:"#666",fontSize:13}}>✕ Cerrar</button>
+              </div>
+              <FormCotizacion data={editData} onChange={changeEdit} mats={mats} desglose={dEdit}/>
+              <div style={{display:"flex",gap:10,marginTop:14}}>
+                <button onClick={guardarEdicion} style={{flex:1,padding:"12px",background:"#27ae60",color:"#fff",border:"none",borderRadius:10,fontWeight:700,cursor:"pointer",fontSize:14}}>💾 Guardar cambios</button>
+                <button onClick={()=>{setEditModal(false);setEditData(null);}} style={{padding:"12px 18px",background:"#fff",border:"1.5px solid #ddd",borderRadius:10,cursor:"pointer",color:"#666",fontSize:14}}>Cancelar</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
