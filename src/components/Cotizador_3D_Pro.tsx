@@ -16,7 +16,7 @@ import type { Trabajo, Config, Inventario, Material } from "../types";
 import { FormCotizacion } from "./FormCotizacion";
 import { Seccion, inpStyle, smlStyle, NumInput } from "./ui";
 import { imprimirPDF } from "../lib/pdf";
-import { descargarCSV } from "../lib/csv";
+import { exportarTrabajosCSV } from "../lib/exportTrabajos";
 import logoUrl from "../assets/chely-logo.svg";
 
 export default function App() {
@@ -482,13 +482,7 @@ export default function App() {
                 {trabajosFiltrados.length} trabajo{trabajosFiltrados.length !== 1 ? "s" : ""}
               </span>
               <button
-                onClick={() =>
-                  descargarCSV(
-                    `trabajos_${hoy()}.csv`,
-                    trabajos,
-                    ["numero", "id", "cotizador", "cliente", "telefono", "email", "ciudad", "pieza", "descripcion", "cantidad", "horas", "manoObra", "markup", "notas", "fecha", "fechaEntrega", "estado", "total", "fechaCreacion", "updatedAt", "items", "lineas", "extras"]
-                  )
-                }
+                onClick={() => exportarTrabajosCSV(trabajos)}
                 disabled={trabajos.length === 0}
                 style={{
                   ...smlStyle,
