@@ -17,6 +17,7 @@ import { FormCotizacion } from "./FormCotizacion";
 import { Seccion, inpStyle, smlStyle, NumInput } from "./ui";
 import { imprimirPDF } from "../lib/pdf";
 import { exportarTrabajosCSV } from "../lib/exportTrabajos";
+import { exportarInventarioCSV } from "../lib/exportInventario";
 import logoUrl from "../assets/chely-logo.svg";
 
 export default function App() {
@@ -659,6 +660,25 @@ export default function App() {
                   {inv.length} carretes · {rollosAlerta} con alerta
                 </p>
               </div>
+              <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={() => exportarInventarioCSV(inv, cfg.alertaGramos)}
+                disabled={inv.length === 0}
+                style={{
+                  padding: "9px 16px",
+                  background: "rgba(255,255,255,.12)",
+                  border: "1.5px solid rgba(255,255,255,.6)",
+                  borderRadius: 10,
+                  color: "#fff",
+                  fontWeight: 700,
+                  cursor: inv.length === 0 ? "not-allowed" : "pointer",
+                  opacity: inv.length === 0 ? 0.5 : 1,
+                  fontSize: 13,
+                  fontFamily: "'Poppins', system-ui, sans-serif",
+                }}
+              >
+                Exportar CSV
+              </button>
               <button
                 onClick={() => {
                   const defaultMat = mats[0];
@@ -689,6 +709,7 @@ export default function App() {
               >
                 + Nuevo carrete
               </button>
+              </div>
             </div>
 
             {/* Filtros inventario */}
