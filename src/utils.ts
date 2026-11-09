@@ -36,6 +36,11 @@ export function fmtFechaHora(iso: string): string {
   return `${dd}/${mm}/${yyyy} ${hh}:${min}`;
 }
 
+export function refTrabajo(t: { numero: number; fechaCreacion: string; fecha: string }): string {
+  const año = new Date(t.fechaCreacion || t.fecha || Date.now()).getFullYear();
+  return `${año}-${String(t.numero || 0).padStart(4, "0")}`;
+}
+
 export function fmtFechaCorta(iso: string): string {
   if (!iso) return "";
   const d = new Date(iso);

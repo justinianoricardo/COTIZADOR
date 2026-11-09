@@ -10,7 +10,7 @@ import {
   MESES_ABR,
   CHELY,
 } from "../constants";
-import { fmt, hoy, uid, fmtFechaHora, toNum } from "../utils";
+import { fmt, hoy, uid, fmtFechaHora, toNum, refTrabajo } from "../utils";
 import { useCotizadorStore } from "../lib/useCotizadorStore";
 import type { Trabajo, Config, Inventario, Material } from "../types";
 import { FormCotizacion } from "./FormCotizacion";
@@ -147,10 +147,6 @@ export default function App() {
     setInv((p) => p.filter((r) => r.id !== id));
   }
 
-  function refTrabajo(t: Trabajo): string {
-    const año = new Date(t.fechaCreacion || t.fecha || Date.now()).getFullYear();
-    return `${año}-${String(t.numero || 0).padStart(4, "0")}`;
-  }
 
   function descargarPDF(t: Trabajo) {
     const ref = refTrabajo(t);
