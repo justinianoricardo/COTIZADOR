@@ -147,7 +147,6 @@ export default function App() {
     setInv((p) => p.filter((r) => r.id !== id));
   }
 
-
   function descargarPDF(t: Trabajo) {
     const ref = refTrabajo(t);
     imprimirPDF(t, mats, cfg, ref);
