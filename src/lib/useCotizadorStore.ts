@@ -42,6 +42,17 @@ function withTotales(trabajos: Trabajo[], mats: Material[], cfg: Config): Trabaj
   return trabajos.map((t) => ({ ...t, total: calcDesglose(t, mats, cfg).precioTotal }));
 }
 
+// Misma forma que el snapshot que se persiste, para comparar sin falsos cambios
+function serializarParaGuardar(d: AppData): string {
+  return JSON.stringify({
+    trabajos: withTotales(d.trabajos, d.mats, d.cfg),
+    inv: d.inv,
+    mats: d.mats,
+    cfg: d.cfg,
+    coloresExtra: d.coloresExtra,
+  });
+}
+
 export function useCotizadorStore() {
   const [data, setData] = useState<AppData>(EMPTY);
   const [sync, setSync] = useState<SyncState>("cargando");
@@ -183,7 +194,7 @@ export function useCotizadorStore() {
       if (payload.eventType === "DELETE" && payload.old) {
         const next = prev.trabajos.filter((t) => t.id !== payload.old!.id);
         const snap = { ...prev, trabajos: next };
-        lastSavedRef.current = JSON.stringify(snap);
+        lastSavedRef.current = serializarParaGuardar(snap);
         return snap;
       }
       if (!row) return prev;
@@ -194,7 +205,7 @@ export function useCotizadorStore() {
         ? [t, ...prev.trabajos.filter((x) => x.id !== t.id)]
         : [t, ...prev.trabajos];
       const snap = { ...prev, trabajos: jobs };
-      lastSavedRef.current = JSON.stringify(snap);
+      lastSavedRef.current = serializarParaGuardar(snap);
       return snap;
     });
   }
@@ -206,7 +217,7 @@ export function useCotizadorStore() {
       if (payload.eventType === "DELETE" && payload.old) {
         const next = prev.inv.filter((r) => r.id !== payload.old!.id);
         const snap = { ...prev, inv: next };
-        lastSavedRef.current = JSON.stringify(snap);
+        lastSavedRef.current = serializarParaGuardar(snap);
         return snap;
       }
       if (!row) return prev;
@@ -214,7 +225,8 @@ export function useCotizadorStore() {
       const exists = prev.inv.some((x) => x.id === r.id);
       const inv = exists ? prev.inv.map((x) => (x.id === r.id ? r : x)) : [r, ...prev.inv];
       const snap = { ...prev, inv };
-      lastSavedRef.current = JSON.stringify(snap);
+      if (serializarParaGuardar(snap) === serializarParaGuardar(prev)) return prev;
+      lastSavedRef.current = serializarParaGuardar(snap);
       return snap;
     });
   }
@@ -226,7 +238,7 @@ export function useCotizadorStore() {
       if (payload.eventType === "DELETE" && payload.old) {
         const next = prev.mats.filter((m) => m.id !== payload.old!.id);
         const snap = { ...prev, mats: next };
-        lastSavedRef.current = JSON.stringify(snap);
+        lastSavedRef.current = serializarParaGuardar(snap);
         return snap;
       }
       if (!row) return prev;
@@ -234,7 +246,7 @@ export function useCotizadorStore() {
       const exists = prev.mats.some((x) => x.id === m.id);
       const mats = exists ? prev.mats.map((x) => (x.id === m.id ? m : x)) : [...prev.mats, m];
       const snap = { ...prev, mats };
-      lastSavedRef.current = JSON.stringify(snap);
+      lastSavedRef.current = serializarParaGuardar(snap);
       return snap;
     });
   }
@@ -246,7 +258,8 @@ export function useCotizadorStore() {
       if (!row) return prev;
       const { cfg, coloresExtra } = settingsRowToConfig(row);
       const snap = { ...prev, cfg, coloresExtra };
-      lastSavedRef.current = JSON.stringify(snap);
+      if (serializarParaGuardar(snap) === serializarParaGuardar(prev)) return prev;
+      lastSavedRef.current = serializarParaGuardar(snap);
       return snap;
     });
   }
