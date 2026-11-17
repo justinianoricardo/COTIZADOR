@@ -18,6 +18,7 @@ import { Seccion, inpStyle, smlStyle, NumInput } from "./ui";
 import { imprimirPDF } from "../lib/pdf";
 import { exportarTrabajosCSV } from "../lib/exportTrabajos";
 import { exportarInventarioCSV } from "../lib/exportInventario";
+import { exportarConfiguracionCSV } from "../lib/exportConfiguracion";
 import logoUrl from "../assets/chely-logo.svg";
 
 export default function App() {
@@ -993,6 +994,25 @@ export default function App() {
         {/* ══ CONFIGURACIÓN ══ */}
         {tab === 4 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button
+                onClick={() => exportarConfiguracionCSV(cfg, mats)}
+                style={{
+                  padding: "9px 16px",
+                  background: CHELY.grad,
+                  border: "none",
+                  borderRadius: 10,
+                  color: "#fff",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  fontSize: 13,
+                  fontFamily: "'Poppins', system-ui, sans-serif",
+                  boxShadow: `0 2px 8px ${CHELY.lila}44`,
+                }}
+              >
+                Exportar CSV
+              </button>
+            </div>
             <Seccion tipo="params" titulo="Parámetros de costo">
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                 {([
